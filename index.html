@@ -1044,6 +1044,1144 @@ async function sendToSheets(data) {
   const url = appsScriptUrl || localStorage.getItem('apps_script_url') || '';
   if (!url) return { ok: false, msg: 'URL Apps Script belum dikonfigurasi.' };
   try {
+    // Kirim sebagai form URLSearchParams agar tidak trigger CORS preflight.
+    // Apps Script menerima ini via e.parameter.payload di doPost.
+    const params = new URLSearchParams();
+    params.append('payload', JSON.stringify(data));
+    const res = await fetch(url, {
+      method: 'POST',
+      mode: 'no-cors',
+      body: params,
+    });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, msg: e.message };
+  }
+}
+
+// ── Update counters ───────────────────────────────────────
+function refreshCounters() {
+  const total = registrations.length;
+  const hadir = registrations.filter(r => r.hadir === 'Hadir').length;
+  document.getElementById('cnt-total').textContent = total;
+  document.getElementById('cnt-hadir').textContent = hadir;
+  document.getElementById('cnt-konsumsi').textContent = hadir;
+}
+
+// ── Set status msg ────────────────────────────────────────
+function setStatus(type, msg) {
+  const el = document.getElementById('submit-status');
+  el.style.display = msg ? '' : 'none';
+  el.innerHTML = msg ? `<div class="notice ${type}">${msg}</div>` : '';
+}
+
+// ── Form submit ───────────────────────────────────────────
+document.getElementById('reg-form').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  const data = collectData();
+  if (!validate(data)) {
+    setStatus('error', '⚠️ Beberapa field wajib belum diisi. Periksa kembali formulir di atas.');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    return;
+  }
+
+  const btn = document.getElementById('btn-submit');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner"></div> Memproses…';
+  setStatus('', '');
+
+  const nomorUrut = registrations.length + 1;
+  data.nomorUrut = nomorUrut;
+
+  // Save locally
+  registrations.push(data);
+  localStorage.setItem('reg_data', JSON.stringify(registrations));
+
+  // Generate PDF
+  try { generatePDF(data, nomorUrut); } catch(err) { console.error(err); }
+
+  // Send to Sheets
+  const sheetsResult = await sendToSheets(data);
+
+  // Show success
+  document.getElementById('main-form-section').style.display = 'none';
+  const ss = document.getElementById('success-screen');
+  ss.style.display = '';
+  refreshCounters();
+
+  let statusNote = '✅ Data berhasil tersimpan di spreadsheet panitia.';
+  if (!sheetsResult.ok) {
+    statusNote = `⚠️ PDF berhasil diunduh. <em>Spreadsheet tidak terhubung — ${sheetsResult.msg || 'URL belum dikonfigurasi'}.</em> Silakan konfigurasikan di panel bawah.`;
+  }
+  ss.querySelector('.notice.success').innerHTML = `
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><polyline points="20 6 9 17 4 12"/></svg>
+    <div>${statusNote} Harap simpan bukti PDF sebagai konfirmasi kehadiran.</div>
+  `;
+});
+
+// ── Reset ─────────────────────────────────────────────────
+function resetForm() {
+  document.getElementById('reg-form').reset();
+  document.querySelectorAll('.radio-item').forEach(l => l.classList.remove('selected'));
+  document.getElementById('angkatan-field').style.display = 'none';
+  document.getElementById('summary-card').style.display = 'none';
+  document.getElementById('success-screen').style.display = 'none';
+  document.getElementById('main-form-section').style.display = '';
+  const btn = document.getElementById('btn-submit');
+  btn.disabled = false;
+  btn.innerHTML = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg> Daftar & Unduh Bukti PDF`;
+  document.getElementById('progress').style.width = '0%';
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+// ── Restore config ────────────────────────────────────────
+document.getElementById('apps-script-url').value = appsScriptUrl;
+</script><!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pendaftaran Bincang Santai Bahasa Jepang – SMK Al Kaaffah</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@300;400;500;700&family=Inter:wght@300;400;500;600&display=swap');
+
+  :root {
+    --navy: #1F3864;
+    --navy-mid: #2E5A9C;
+    --navy-light: #4A7BC8;
+    --red-jp: #C0392B;
+    --cream: #FDFBF7;
+    --cream-2: #F5F1E8;
+    --text-main: #1A1A2E;
+    --text-muted: #6B7280;
+    --border: rgba(31,56,100,0.15);
+    --success: #1D9E75;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Inter', 'Noto Sans JP', sans-serif;
+    background: var(--cream);
+    min-height: 100vh;
+    color: var(--text-main);
+  }
+
+  /* Torii gate SVG header accent */
+  .hero {
+    background: var(--navy);
+    padding: 3rem 2rem 2.5rem;
+    position: relative;
+    overflow: hidden;
+    text-align: center;
+  }
+
+  .hero::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 50%;
+    transform: translateX(-50%);
+    width: 120px; height: 4px;
+    background: var(--red-jp);
+    border-radius: 0 0 4px 4px;
+  }
+
+  .hero-label {
+    display: inline-block;
+    background: var(--red-jp);
+    color: white;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    padding: 5px 16px;
+    border-radius: 20px;
+    margin-bottom: 1.25rem;
+  }
+
+  .hero h1 {
+    font-family: 'Inter', sans-serif;
+    font-size: 2rem;
+    font-weight: 600;
+    color: white;
+    line-height: 1.2;
+    margin-bottom: 0.5rem;
+  }
+
+  .hero-jp {
+    font-family: 'Noto Sans JP', sans-serif;
+    font-size: 1.1rem;
+    font-weight: 300;
+    color: rgba(255,255,255,0.55);
+    letter-spacing: 0.15em;
+    margin-bottom: 1.5rem;
+  }
+
+  .hero-meta {
+    display: flex;
+    gap: 1.5rem;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+
+  .hero-chip {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(255,255,255,0.1);
+    border: 1px solid rgba(255,255,255,0.2);
+    border-radius: 6px;
+    padding: 6px 14px;
+    font-size: 13px;
+    color: rgba(255,255,255,0.85);
+  }
+
+  .hero-chip svg { flex-shrink: 0; }
+
+  /* Progress bar */
+  .progress-bar {
+    height: 3px;
+    background: var(--cream-2);
+    position: relative;
+  }
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--navy), var(--red-jp));
+    transition: width 0.4s ease;
+    width: 0%;
+  }
+
+  /* Main form container */
+  .container {
+    max-width: 680px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem 4rem;
+  }
+
+  /* Section cards */
+  .card {
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 1.75rem;
+    margin-bottom: 1.25rem;
+    transition: border-color 0.2s;
+  }
+  .card:focus-within { border-color: var(--navy-mid); }
+
+  .card-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 1.5rem;
+  }
+
+  .card-icon {
+    width: 36px; height: 36px;
+    background: #EBF3FB;
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--navy);
+    font-size: 17px;
+    flex-shrink: 0;
+  }
+
+  .card-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--navy);
+  }
+
+  /* Form fields */
+  .field { margin-bottom: 1.1rem; }
+
+  .field label {
+    display: block;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-main);
+    margin-bottom: 6px;
+  }
+
+  .field label .req { color: var(--red-jp); margin-left: 2px; }
+  .field label .opt { color: var(--text-muted); font-weight: 400; font-size: 12px; margin-left: 4px; }
+
+  .field input, .field select, .field textarea {
+    width: 100%;
+    padding: 10px 14px;
+    font-size: 14px;
+    font-family: 'Inter', sans-serif;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: #FAFAFA;
+    color: var(--text-main);
+    outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+  }
+
+  .field input:focus, .field select:focus, .field textarea:focus {
+    border-color: var(--navy-mid);
+    background: white;
+    box-shadow: 0 0 0 3px rgba(46,90,156,0.1);
+  }
+
+  .field input.error, .field select.error { border-color: var(--red-jp); }
+
+  .field textarea { resize: vertical; min-height: 90px; }
+
+  .field-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+  }
+
+  @media (max-width: 540px) {
+    .field-row { grid-template-columns: 1fr; }
+  }
+
+  /* Radio groups */
+  .radio-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .radio-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.15s;
+    background: #FAFAFA;
+  }
+
+  .radio-item:hover { border-color: var(--navy-mid); background: #F0F6FF; }
+
+  .radio-item input[type="radio"] {
+    width: auto;
+    margin: 0;
+    accent-color: var(--navy);
+  }
+
+  .radio-item.selected {
+    border-color: var(--navy-mid);
+    background: #EBF3FB;
+  }
+
+  .radio-item span {
+    font-size: 14px;
+    color: var(--text-main);
+    flex: 1;
+  }
+
+  .radio-item .badge {
+    font-size: 11px;
+    padding: 2px 10px;
+    border-radius: 20px;
+    background: #EBF3FB;
+    color: var(--navy-mid);
+    font-weight: 500;
+  }
+
+  /* Checkbox */
+  .checkbox-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: #FAFAFA;
+    transition: all 0.15s;
+  }
+
+  .checkbox-item input[type="checkbox"] {
+    width: auto; margin-top: 2px; flex-shrink: 0;
+    accent-color: var(--navy);
+  }
+
+  .checkbox-item:has(input:checked) {
+    border-color: var(--navy-mid);
+    background: #EBF3FB;
+  }
+
+  /* Topics multi select */
+  .topics-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  @media (max-width: 480px) {
+    .topics-grid { grid-template-columns: 1fr; }
+  }
+
+  .topic-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 9px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    cursor: pointer;
+    background: #FAFAFA;
+    transition: all 0.15s;
+    font-size: 13px;
+  }
+
+  .topic-item:has(input:checked) {
+    border-color: var(--navy-mid);
+    background: #EBF3FB;
+    color: var(--navy);
+  }
+
+  .topic-item input { width: auto; margin-top: 2px; accent-color: var(--navy); }
+
+  /* Error message */
+  .error-msg {
+    font-size: 12px;
+    color: var(--red-jp);
+    margin-top: 4px;
+    display: none;
+  }
+
+  /* Summary box */
+  .summary-box {
+    background: var(--cream-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.25rem;
+    margin-top: 1.25rem;
+  }
+
+  .summary-title {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    margin-bottom: 1rem;
+  }
+
+  .summary-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 5px 0;
+    font-size: 13.5px;
+    border-bottom: 1px dashed var(--border);
+  }
+
+  .summary-row:last-child { border-bottom: none; }
+  .summary-row .key { color: var(--text-muted); }
+  .summary-row .val { font-weight: 500; color: var(--navy); text-align: right; max-width: 65%; }
+
+  /* Status notice */
+  .notice {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .notice.info { background: #EBF3FB; color: var(--navy); border: 1px solid rgba(46,90,156,0.2); }
+  .notice.success { background: #E1F5EE; color: #0F6E56; border: 1px solid rgba(15,110,86,0.2); }
+  .notice.error { background: #FCEBEB; color: #A32D2D; border: 1px solid rgba(163,45,45,0.2); }
+
+  /* Submit button */
+  .btn-submit {
+    width: 100%;
+    padding: 15px 24px;
+    background: var(--navy);
+    color: white;
+    font-size: 15px;
+    font-weight: 600;
+    font-family: 'Inter', sans-serif;
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    letter-spacing: 0.01em;
+    margin-top: 1.5rem;
+  }
+
+  .btn-submit:hover { background: var(--navy-mid); transform: translateY(-1px); }
+  .btn-submit:active { transform: translateY(0); }
+  .btn-submit:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+
+  .btn-secondary {
+    width: 100%;
+    padding: 11px 24px;
+    background: transparent;
+    color: var(--navy-mid);
+    font-size: 14px;
+    font-weight: 500;
+    font-family: 'Inter', sans-serif;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    cursor: pointer;
+    transition: all 0.15s;
+    margin-top: 0.75rem;
+  }
+
+  .btn-secondary:hover { background: var(--cream-2); border-color: var(--navy-mid); }
+
+  /* Spinner */
+  .spinner {
+    width: 16px; height: 16px;
+    border: 2px solid rgba(255,255,255,0.3);
+    border-top-color: white;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Success screen */
+  #success-screen {
+    display: none;
+    text-align: center;
+    padding: 3rem 2rem;
+  }
+
+  .success-icon {
+    width: 72px; height: 72px;
+    background: #E1F5EE;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    margin: 0 auto 1.5rem;
+    font-size: 32px;
+  }
+
+  .counter-box {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1rem;
+    margin-top: 1.5rem;
+  }
+
+  .counter-item {
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem;
+    text-align: center;
+  }
+
+  .counter-num {
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--navy);
+    line-height: 1;
+    margin-bottom: 4px;
+  }
+
+  .counter-label {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  /* Config panel */
+  #config-panel {
+    background: var(--cream-2);
+    border-top: 1px solid var(--border);
+    padding: 1.5rem;
+    font-size: 13px;
+  }
+
+  #config-panel summary {
+    cursor: pointer;
+    color: var(--text-muted);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 0;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  #config-panel[open] summary { margin-bottom: 1rem; }
+
+  #config-panel input {
+    width: 100%;
+    padding: 8px 12px;
+    font-size: 13px;
+    font-family: monospace;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: white;
+    color: var(--text-main);
+    outline: none;
+    margin-top: 6px;
+  }
+
+  #config-panel input:focus { border-color: var(--navy-mid); }
+
+  /* Floating decoration – sakura petals (pure CSS, subtle) */
+  .petal {
+    position: fixed;
+    width: 8px; height: 10px;
+    background: rgba(192,57,43,0.12);
+    border-radius: 50% 0 50% 0;
+    pointer-events: none;
+    animation: fall linear infinite;
+    z-index: 0;
+  }
+
+  @keyframes fall {
+    0% { transform: translateY(-20px) rotate(0deg); opacity: 0.6; }
+    100% { transform: translateY(100vh) rotate(720deg); opacity: 0; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Subtle sakura petals -->
+<div class="petal" style="left:8%;animation-duration:8s;animation-delay:0s;"></div>
+<div class="petal" style="left:23%;animation-duration:11s;animation-delay:2s;"></div>
+<div class="petal" style="left:67%;animation-duration:9s;animation-delay:4s;"></div>
+<div class="petal" style="left:88%;animation-duration:13s;animation-delay:1.5s;"></div>
+<div class="petal" style="left:42%;animation-duration:10s;animation-delay:6s;"></div>
+
+<!-- Hero -->
+<header class="hero">
+  <div class="hero-label">SMK Al Kaaffah · 日本語</div>
+  <h1>Bincang Santai<br>Bahasa Jepang</h1>
+  <p class="hero-jp">日本語カジュアルトークイベント</p>
+  <div class="hero-meta">
+    <div class="hero-chip">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+      Hari &amp; tanggal menyusul
+    </div>
+    <div class="hero-chip">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+      Aula SMK Al Kaaffah
+    </div>
+    <div class="hero-chip">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      Kelas X, XI &amp; Alumni
+    </div>
+  </div>
+</header>
+
+<div class="progress-bar"><div class="progress-fill" id="progress"></div></div>
+
+<!-- Main Content -->
+<div class="container" id="main-form-section">
+
+  <!-- Narasumber notice -->
+  <div class="notice info" style="margin-bottom:1.25rem;">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;margin-top:1px"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+    <div>Kegiatan ini menghadirkan <strong>Sensei Erni Mai Ronawati</strong> — Guru Bahasa Jepang bersertifikasi JLPT N1 — sebagai narasumber utama. Wawasan magang, kerja, dan kuliah ke Jepang.</div>
+  </div>
+
+  <form id="reg-form" novalidate>
+
+    <!-- Identitas -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        </div>
+        <span class="card-title">Identitas Peserta</span>
+      </div>
+
+      <div class="field">
+        <label>Nama Lengkap <span class="req">*</span></label>
+        <input type="text" id="nama" placeholder="Masukkan nama sesuai identitas" autocomplete="name" />
+        <div class="error-msg" id="err-nama">Nama lengkap wajib diisi.</div>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label>No. HP / WhatsApp <span class="req">*</span></label>
+          <input type="tel" id="hp" placeholder="08xx-xxxx-xxxx" />
+          <div class="error-msg" id="err-hp">Nomor HP wajib diisi.</div>
+        </div>
+        <div class="field">
+          <label>Email <span class="opt">(opsional)</span></label>
+          <input type="email" id="email" placeholder="email@contoh.com" />
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Status Peserta <span class="req">*</span></label>
+        <div class="radio-group" id="status-group">
+          <label class="radio-item" onclick="selectRadio(this)">
+            <input type="radio" name="status" value="Kelas X" />
+            <span>Siswa Kelas X</span>
+            <span class="badge">Aktif</span>
+          </label>
+          <label class="radio-item" onclick="selectRadio(this)">
+            <input type="radio" name="status" value="Kelas XI" />
+            <span>Siswa Kelas XI</span>
+            <span class="badge">Aktif</span>
+          </label>
+          <label class="radio-item" onclick="selectRadio(this)">
+            <input type="radio" name="status" value="Alumni" />
+            <span>Alumni SMK Al Kaaffah</span>
+            <span class="badge">Alumni</span>
+          </label>
+        </div>
+        <div class="error-msg" id="err-status">Status peserta wajib dipilih.</div>
+      </div>
+
+      <div class="field" id="jurusan-field">
+        <label>Jurusan / Program Keahlian <span class="opt">(opsional)</span></label>
+        <input type="text" id="jurusan" placeholder="Contoh: Teknik Komputer Jaringan" />
+      </div>
+
+      <div class="field" id="angkatan-field" style="display:none">
+        <label>Tahun Lulus <span class="req">*</span></label>
+        <select id="angkatan">
+          <option value="">— Pilih tahun lulus —</option>
+          <script>for(let y=2024;y>=2015;y--) document.write(`<option value="${y}">${y}</option>`);</script>
+        </select>
+        <div class="error-msg" id="err-angkatan">Tahun lulus wajib dipilih untuk alumni.</div>
+      </div>
+    </div>
+
+    <!-- Minat & Tujuan -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+        </div>
+        <span class="card-title">Minat &amp; Tujuan</span>
+      </div>
+
+      <div class="field">
+        <label>Tujuan mengikuti program Jepang <span class="req">*</span></label>
+        <div class="radio-group" id="tujuan-group">
+          <label class="radio-item" onclick="selectRadio(this)">
+            <input type="radio" name="tujuan" value="Magang" />
+            <span>Magang ke Jepang (Intern / Kenshu)</span>
+          </label>
+          <label class="radio-item" onclick="selectRadio(this)">
+            <input type="radio" name="tujuan" value="Kerja" />
+            <span>Bekerja di Jepang</span>
+          </label>
+          <label class="radio-item" onclick="selectRadio(this)">
+            <input type="radio" name="tujuan" value="Kuliah" />
+            <span>Kuliah / Studi Lanjut ke Jepang</span>
+          </label>
+          <label class="radio-item" onclick="selectRadio(this)">
+            <input type="radio" name="tujuan" value="Umum" />
+            <span>Ingin tahu / Wawasan umum</span>
+          </label>
+        </div>
+        <div class="error-msg" id="err-tujuan">Pilih setidaknya satu tujuan.</div>
+      </div>
+
+      <div class="field">
+        <label>Topik yang paling ingin diketahui <span class="req">*</span></label>
+        <div class="topics-grid" id="topics-grid">
+          <label class="topic-item">
+            <input type="checkbox" name="topik" value="Jalur & Syarat Magang" /> Jalur &amp; Syarat Magang
+          </label>
+          <label class="topic-item">
+            <input type="checkbox" name="topik" value="Peluang Kerja & Gaji" /> Peluang Kerja &amp; Gaji
+          </label>
+          <label class="topic-item">
+            <input type="checkbox" name="topik" value="Kuliah & Beasiswa" /> Kuliah &amp; Beasiswa
+          </label>
+          <label class="topic-item">
+            <input type="checkbox" name="topik" value="JLPT & Belajar Bahasa" /> JLPT &amp; Belajar Bahasa
+          </label>
+          <label class="topic-item">
+            <input type="checkbox" name="topik" value="Kehidupan & Budaya Jepang" /> Kehidupan &amp; Budaya Jepang
+          </label>
+          <label class="topic-item">
+            <input type="checkbox" name="topik" value="Tips Adaptasi di Jepang" /> Tips Adaptasi di Jepang
+          </label>
+        </div>
+        <div class="error-msg" id="err-topik">Pilih minimal satu topik.</div>
+      </div>
+
+      <div class="field">
+        <label>Level Bahasa Jepang saat ini</label>
+        <select id="level-jp">
+          <option value="">— Pilih level —</option>
+          <option value="Belum pernah belajar">Belum pernah belajar</option>
+          <option value="Pemula (Hiragana/Katakana)">Pemula (Hiragana/Katakana)</option>
+          <option value="Dasar (N5/N4)">Dasar (N5/N4)</option>
+          <option value="Menengah (N3)">Menengah (N3)</option>
+          <option value="Mahir (N2/N1)">Mahir (N2/N1)</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label>Pertanyaan / harapan khusus <span class="opt">(opsional)</span></label>
+        <textarea id="pertanyaan" placeholder="Tulis pertanyaan atau hal yang ingin dibahas pada sesi tanya jawab…"></textarea>
+      </div>
+    </div>
+
+    <!-- Kehadiran & Konsumsi -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-icon">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
+        </div>
+        <span class="card-title">Kehadiran &amp; Konsumsi</span>
+      </div>
+
+      <div class="field">
+        <label>Konfirmasi kehadiran <span class="req">*</span></label>
+        <div class="radio-group">
+          <label class="radio-item" onclick="selectRadio(this)">
+            <input type="radio" name="hadir" value="Hadir" />
+            <span>Ya, saya akan hadir</span>
+          </label>
+          <label class="radio-item" onclick="selectRadio(this)">
+            <input type="radio" name="hadir" value="Belum Pasti" />
+            <span>Belum pasti / masih konfirmasi</span>
+          </label>
+        </div>
+        <div class="error-msg" id="err-hadir">Konfirmasi kehadiran wajib dipilih.</div>
+      </div>
+
+      <div class="field">
+        <label>Pantangan makanan / alergi <span class="opt">(opsional)</span></label>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <label class="checkbox-item">
+            <input type="checkbox" name="pantangan" value="Tidak makan daging babi" /> Tidak makan daging babi
+          </label>
+          <label class="checkbox-item">
+            <input type="checkbox" name="pantangan" value="Vegetarian" /> Vegetarian / tidak makan daging
+          </label>
+          <label class="checkbox-item">
+            <input type="checkbox" name="pantangan" value="Alergi seafood" /> Alergi seafood
+          </label>
+          <label class="checkbox-item">
+            <input type="checkbox" name="pantangan" value="Tidak ada pantangan" checked /> Tidak ada pantangan khusus
+          </label>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Catatan tambahan <span class="opt">(opsional)</span></label>
+        <input type="text" id="catatan" placeholder="Misal: datang bersama rombongan, kebutuhan khusus, dll." />
+      </div>
+    </div>
+
+    <!-- Summary -->
+    <div class="card" id="summary-card" style="display:none">
+      <div class="card-header">
+        <div class="card-icon">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+        </div>
+        <span class="card-title">Ringkasan Pendaftaran</span>
+      </div>
+      <div id="summary-content" class="summary-box"></div>
+    </div>
+
+    <!-- Submit area -->
+    <div id="submit-status" style="margin-bottom:0.75rem;display:none"></div>
+
+    <button type="submit" class="btn-submit" id="btn-submit">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+      Daftar &amp; Unduh Bukti PDF
+    </button>
+
+    <button type="button" class="btn-secondary" id="btn-preview" onclick="showPreview()">
+      Pratinjau data sebelum mendaftar
+    </button>
+
+  </form>
+
+  <!-- Success screen -->
+  <div id="success-screen">
+    <div class="success-icon">✓</div>
+    <h2 style="font-size:1.5rem;font-weight:600;color:var(--navy);margin-bottom:0.5rem">Pendaftaran Berhasil!</h2>
+    <p style="color:var(--text-muted);margin-bottom:1.5rem;font-size:14px">
+      Bukti pendaftaran PDF otomatis terunduh. Data tersimpan di spreadsheet panitia.
+    </p>
+    <div class="notice success">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><polyline points="20 6 9 17 4 12"/></svg>
+      <div>Harap simpan bukti PDF sebagai konfirmasi kehadiran. Tunjukkan kepada panitia saat registrasi ulang di hari acara.</div>
+    </div>
+    <div class="counter-box">
+      <div class="counter-item">
+        <div class="counter-num" id="cnt-total">—</div>
+        <div class="counter-label">Total Daftar</div>
+      </div>
+      <div class="counter-item">
+        <div class="counter-num" id="cnt-hadir">—</div>
+        <div class="counter-label">Konfirmasi Hadir</div>
+      </div>
+      <div class="counter-item">
+        <div class="counter-num" id="cnt-konsumsi">—</div>
+        <div class="counter-label">Est. Konsumsi</div>
+      </div>
+    </div>
+    <button class="btn-secondary" onclick="resetForm()" style="margin-top:1.5rem">
+      Daftarkan peserta lain
+    </button>
+  </div>
+
+</div>
+
+<!-- Config panel (for admin to enter Apps Script URL) -->
+<details id="config-panel">
+  <summary>
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93l-1.41 1.41M6.34 17.66l-1.41 1.41M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M12 2v2M12 20v2"/></svg>
+    Konfigurasi Panitia — Google Sheets
+  </summary>
+  <div>
+    <div class="notice info" style="margin-bottom:1rem;font-size:12px">
+      Tempelkan URL Google Apps Script Web App di bawah ini. Data peserta akan dikirim otomatis ke Google Sheets setiap kali ada pendaftaran baru. Lihat instruksi setup di bawah halaman ini.
+    </div>
+    <label style="font-size:12px;color:var(--text-muted);font-weight:500">Apps Script Web App URL</label>
+    <input type="url" id="apps-script-url" placeholder="https://script.google.com/macros/s/XXXXX/exec" />
+    <button onclick="saveConfig()" style="margin-top:8px;padding:7px 18px;background:var(--navy);color:white;border:none;border-radius:6px;font-size:12px;cursor:pointer;font-family:Inter,sans-serif">
+      Simpan URL
+    </button>
+    <span id="config-saved" style="font-size:12px;color:var(--success);margin-left:8px;display:none">✓ Disimpan</span>
+  </div>
+</details>
+
+<script>
+const { jsPDF } = window.jspdf;
+
+// ── State ──────────────────────────────────────────────
+let registrations = JSON.parse(localStorage.getItem('reg_data') || '[]');
+let appsScriptUrl = localStorage.getItem('apps_script_url') || '';
+
+// ── Config ─────────────────────────────────────────────
+if (appsScriptUrl) document.getElementById('apps-script-url').value = appsScriptUrl;
+
+function saveConfig() {
+  appsScriptUrl = document.getElementById('apps-script-url').value.trim();
+  localStorage.setItem('apps_script_url', appsScriptUrl);
+  const el = document.getElementById('config-saved');
+  el.style.display = 'inline';
+  setTimeout(() => el.style.display = 'none', 2500);
+}
+
+// ── Radio helper ────────────────────────────────────────
+function selectRadio(label) {
+  const group = label.closest('.radio-group');
+  if (!group) return;
+  group.querySelectorAll('.radio-item').forEach(l => l.classList.remove('selected'));
+  label.classList.add('selected');
+  if (label.querySelector('input[name="status"]')) {
+    const val = label.querySelector('input').value;
+    document.getElementById('angkatan-field').style.display = val === 'Alumni' ? '' : 'none';
+  }
+}
+
+// ── Progress bar ────────────────────────────────────────
+function updateProgress() {
+  const fields = ['nama','hp','status','tujuan','hadir'];
+  let filled = 0;
+  if (document.getElementById('nama').value.trim()) filled++;
+  if (document.getElementById('hp').value.trim()) filled++;
+  if (document.querySelector('input[name="status"]:checked')) filled++;
+  if (document.querySelector('input[name="tujuan"]:checked')) filled++;
+  if (document.querySelector('input[name="hadir"]:checked')) filled++;
+  document.getElementById('progress').style.width = (filled / fields.length * 100) + '%';
+}
+
+document.addEventListener('input', updateProgress);
+document.addEventListener('change', updateProgress);
+
+// ── Collect data ────────────────────────────────────────
+function collectData() {
+  const topikChecked = [...document.querySelectorAll('input[name="topik"]:checked')].map(c => c.value);
+  const pantanganChecked = [...document.querySelectorAll('input[name="pantangan"]:checked')].map(c => c.value);
+  return {
+    waktu: new Date().toLocaleString('id-ID', { dateStyle: 'full', timeStyle: 'short' }),
+    nama: document.getElementById('nama').value.trim(),
+    hp: document.getElementById('hp').value.trim(),
+    email: document.getElementById('email').value.trim(),
+    status: (document.querySelector('input[name="status"]:checked') || {}).value || '',
+    jurusan: document.getElementById('jurusan').value.trim(),
+    angkatan: document.getElementById('angkatan').value,
+    tujuan: (document.querySelector('input[name="tujuan"]:checked') || {}).value || '',
+    topik: topikChecked.join(', '),
+    levelJP: document.getElementById('level-jp').value,
+    pertanyaan: document.getElementById('pertanyaan').value.trim(),
+    hadir: (document.querySelector('input[name="hadir"]:checked') || {}).value || '',
+    pantangan: pantanganChecked.join(', '),
+    catatan: document.getElementById('catatan').value.trim(),
+  };
+}
+
+// ── Validate ─────────────────────────────────────────────
+function validate(data) {
+  let valid = true;
+
+  function check(id, errId, cond) {
+    const errEl = document.getElementById(errId);
+    const inp = document.getElementById(id);
+    if (!cond) {
+      if (errEl) errEl.style.display = 'block';
+      if (inp) inp.classList.add('error');
+      valid = false;
+    } else {
+      if (errEl) errEl.style.display = 'none';
+      if (inp) inp.classList.remove('error');
+    }
+  }
+
+  check('nama', 'err-nama', data.nama.length > 1);
+  check('hp', 'err-hp', data.hp.length > 6);
+
+  const statusErr = document.getElementById('err-status');
+  if (!data.status) { statusErr.style.display = 'block'; valid = false; } else statusErr.style.display = 'none';
+
+  const tujuanErr = document.getElementById('err-tujuan');
+  if (!data.tujuan) { tujuanErr.style.display = 'block'; valid = false; } else tujuanErr.style.display = 'none';
+
+  const topikErr = document.getElementById('err-topik');
+  if (!data.topik) { topikErr.style.display = 'block'; valid = false; } else topikErr.style.display = 'none';
+
+  const hadirErr = document.getElementById('err-hadir');
+  if (!data.hadir) { hadirErr.style.display = 'block'; valid = false; } else hadirErr.style.display = 'none';
+
+  if (data.status === 'Alumni' && !data.angkatan) {
+    document.getElementById('err-angkatan').style.display = 'block'; valid = false;
+  } else {
+    document.getElementById('err-angkatan').style.display = 'none';
+  }
+
+  return valid;
+}
+
+// ── Preview ──────────────────────────────────────────────
+function showPreview() {
+  const data = collectData();
+  const card = document.getElementById('summary-card');
+  const content = document.getElementById('summary-content');
+  card.style.display = '';
+
+  const rows = [
+    ['Nama', data.nama || '—'],
+    ['No. HP/WA', data.hp || '—'],
+    ['Email', data.email || '—'],
+    ['Status', data.status || '—'],
+    ['Jurusan', data.jurusan || '—'],
+    data.status === 'Alumni' ? ['Tahun Lulus', data.angkatan || '—'] : null,
+    ['Tujuan Utama', data.tujuan || '—'],
+    ['Topik Minat', data.topik || '—'],
+    ['Level Bahasa Jepang', data.levelJP || '—'],
+    ['Konfirmasi Hadir', data.hadir || '—'],
+    ['Pantangan Makanan', data.pantangan || '—'],
+  ].filter(Boolean);
+
+  content.innerHTML = '<p class="summary-title">Periksa data sebelum mengirim</p>' +
+    rows.map(([k,v]) => `<div class="summary-row"><span class="key">${k}</span><span class="val">${v}</span></div>`).join('');
+  card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// ── Generate PDF ─────────────────────────────────────────
+function generatePDF(data, nomorUrut) {
+  const doc = new jsPDF({ unit: 'mm', format: 'a5' });
+  const W = 148, M = 16;
+  let y = 0;
+
+  // Header bar
+  doc.setFillColor(31, 56, 100);
+  doc.rect(0, 0, W, 28, 'F');
+  doc.setFillColor(192, 57, 43);
+  doc.rect(0, 0, W, 3, 'F');
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(13);
+  doc.setTextColor(255, 255, 255);
+  doc.text('BUKTI PENDAFTARAN', W / 2, 12, { align: 'center' });
+  doc.setFontSize(9);
+  doc.setFont('helvetica', 'normal');
+  doc.text('Bincang Santai Bahasa Jepang – SMK Al Kaaffah', W / 2, 19, { align: 'center' });
+  doc.setFontSize(8);
+  doc.text('Jepang-go Kazuaru Tooku Ibento | 日本語カジュアルトーク', W / 2, 24.5, { align: 'center' });
+
+  y = 36;
+
+  // Nomor urut badge
+  doc.setFillColor(235, 243, 251);
+  doc.roundedRect(M, y - 5, W - M * 2, 12, 2, 2, 'F');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9);
+  doc.setTextColor(31, 56, 100);
+  doc.text(`No. Peserta : ${String(nomorUrut).padStart(3, '0')}`, W / 2, y + 2, { align: 'center' });
+  y += 13;
+
+  // Data rows
+  const rows = [
+    ['Nama Lengkap', data.nama],
+    ['Status', data.status + (data.angkatan ? ` (Lulus ${data.angkatan})` : '')],
+    ['Jurusan', data.jurusan || '—'],
+    ['No. HP / WA', data.hp],
+    ['Email', data.email || '—'],
+    ['Tujuan', data.tujuan],
+    ['Konfirmasi Hadir', data.hadir],
+    ['Level Bahasa Jepang', data.levelJP || '—'],
+    ['Pantangan Makanan', data.pantangan || '—'],
+    ['Topik Minat', data.topik],
+    ['Waktu Daftar', data.waktu],
+  ];
+
+  doc.setFontSize(8.5);
+  rows.forEach(([k, v], i) => {
+    const bg = i % 2 === 0;
+    if (bg) { doc.setFillColor(248, 250, 253); doc.rect(M, y - 3.5, W - M * 2, 8, 'F'); }
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(80, 80, 100);
+    doc.text(k, M + 2, y + 1);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(30, 30, 50);
+    const valX = M + 48;
+    const wrapped = doc.splitTextToSize(v || '—', W - valX - M);
+    doc.text(wrapped, valX, y + 1);
+    y += wrapped.length > 1 ? wrapped.length * 5 + 2 : 8;
+  });
+
+  if (data.pertanyaan) {
+    y += 2;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8);
+    doc.setTextColor(31, 56, 100);
+    doc.text('Pertanyaan / Harapan:', M, y);
+    y += 5;
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(50, 50, 70);
+    const qWrapped = doc.splitTextToSize(data.pertanyaan, W - M * 2);
+    doc.text(qWrapped, M, y);
+    y += qWrapped.length * 5 + 4;
+  }
+
+  // Footer
+  doc.setFillColor(31, 56, 100);
+  doc.rect(0, 200, W, 10, 'F');
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7.5);
+  doc.setTextColor(180, 200, 230);
+  doc.text('Tunjukkan bukti ini kepada panitia saat registrasi ulang di hari acara.', W / 2, 206, { align: 'center' });
+
+  const filename = `Bukti_Pendaftaran_${data.nama.replace(/\s+/g, '_')}_${String(nomorUrut).padStart(3, '0')}.pdf`;
+  doc.save(filename);
+}
+
+// ── Send to Google Sheets ─────────────────────────────────
+async function sendToSheets(data) {
+  const url = appsScriptUrl || localStorage.getItem('apps_script_url') || '';
+  if (!url) return { ok: false, msg: 'URL Apps Script belum dikonfigurasi.' };
+  try {
     const res = await fetch(url, {
       method: 'POST',
       mode: 'no-cors',
